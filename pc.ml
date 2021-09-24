@@ -53,11 +53,35 @@ let caten nt1 nt2 s =
   let (e2, s) = (nt2 s) in
   ((e1, e2), s);;
 
+let caten3 nt1 nt2 nt3 s =
+  let (e1, s) = (nt1 s) in
+  let (e2, s) = (nt2 s) in
+  let (e3, s) = (nt3 s) in
+  ((e1, e2, e3), s);;
+
+let caten4 nt1 nt2 nt3 nt4 s =
+  let (e1, s) = (nt1 s) in
+  let (e2, s) = (nt2 s) in
+  let (e3, s) = (nt3 s) in
+  let (e4, s) = (nt4 s) in
+  ((e1, e2, e3, e4), s);;
+
+let caten5 nt1 nt2 nt3 nt4 nt5 s =
+    let (e1, s) = (nt1 s) in
+    let (e2, s) = (nt2 s) in
+    let (e3, s) = (nt3 s) in
+    let (e4, s) = (nt4 s) in
+    let (e5, s) = (nt5 s) in
+    ((e1, e2, e3, e4, e5), s);;
+
 let pack nt f s =
   let (e, s) = (nt s) in
   ((f e), s);;
 
 let packaten nt1 nt2 f s = pack (caten nt1 nt2) f s;;
+let packaten3 nt1 nt2 nt3 f s = pack (caten3 nt1 nt2 nt3) f s;;
+let packaten4 nt1 nt2 nt3 nt4 f s = pack (caten4 nt1 nt2 nt3 nt4) f s;;
+let packaten5 nt1 nt2 nt3 nt4 nt5 f s = pack (caten5 nt1 nt2 nt3 nt4 nt5) f s;;
 
 let wrap left nt right =
   packaten
@@ -191,8 +215,13 @@ let separated nt sep =
       nt
       (star (packaten sep nt (fun (_, e) -> e)))
       (fun (e, es) -> e :: es))
-    nt_epsilon
+    nt_epsilon;;
 
+let separatedplus nt sep =
+  (packaten
+    nt
+    (star (packaten sep nt (fun (_, e) -> e)))
+    (fun (e, es) -> e :: es));;
 
 let make_range leq ch1 ch2 (s : char list) =
   const (fun ch -> (leq ch1 ch) && (leq ch ch2)) s;;

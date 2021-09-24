@@ -6,20 +6,23 @@ type const =
   | Chr of char
   | Str of string
   | Flt of float;;
+  (* | CompundLiteral of const list;; *)
 
 (* int parser *)
 
 let char_to_digit ch = (int_of_char ch) - (int_of_char '0');;
 
-let int_nt = 
-  (PC.packaten
-    (PC.range '1' '9')
-    (PC.star (PC.range '0' '9')))
-    (fun (dig1, digits) -> 
-      List.fold_left 
-        (fun num dig -> (num * 10) + (char_to_digit dig))
-        (char_to_digit dig1)
-        digits);;
+let int_nt =
+  (PC.disj
+    (PC.packaten
+      (PC.range '1' '9')
+      (PC.star (PC.range '0' '9'))
+      (fun (dig1, digits) -> 
+        List.fold_left 
+          (fun num dig -> (num * 10) + (char_to_digit dig))
+          (char_to_digit dig1)
+          digits))
+    (PC.pack (PC.char '0') (fun _ -> 0)));;
 
 (* float parser *)
 
@@ -42,8 +45,13 @@ let char_nt =
   (PC.wrap
     (PC.char '\'')
     (PC.disj_list [
-      PC.diff (PC.range (char_of_int 0) (char_of_int 128)) (PC.one_of special_chars);
-      PC.pack (PC.caten (PC.char '\\') (PC.one_of special_chars)) (fun (_, ch) -> ch)
+      PC.diff 
+        (PC.range (char_of_int 0) (char_of_int 128)) 
+        (PC.one_of special_chars);
+      PC.packaten 
+        (PC.char '\\')
+        (PC.one_of special_chars)
+        (fun (_, ch) -> ch)
     ])
     (PC.char '\''));;
 
@@ -54,8 +62,13 @@ let string_nt =
     (PC.wrap
       (PC.char '"')
       (PC.star (PC.disj_list [
-        PC.diff (PC.range (char_of_int 0) (char_of_int 128)) (PC.one_of special_chars);
-        PC.pack (PC.caten (PC.char '\\') (PC.one_of special_chars)) (fun (_, ch) -> ch)
+        PC.diff 
+          (PC.range (char_of_int 0) (char_of_int 128))
+          (PC.one_of special_chars);
+        PC.packaten 
+          (PC.char '\\')
+          (PC.one_of special_chars)
+          (fun (_, ch) -> ch)
       ]))
       (PC.char '"'))
     list_to_string);;
@@ -75,9 +88,11 @@ type type_expr =
   | TChar
   | TDouble
   | TVoid
+  | Unkn of string
   | TPointer of type_expr
   | TArr of type_expr * int
-  | TFunc of type_expr * type_expr list;;
+  | TFunc of type_expr * type_expr list
+  | TStruct of (string * type_expr) list;;
 
 type part_type =
   | PTPointer
@@ -100,13 +115,12 @@ let type_keywords = [
  *)
 
 let base_type_nt =
-  (PC.disj_list
-    (List.map 
+  (PC.disj
+    (PC.pack var_nt (fun v -> Unkn v))
+    (PC.disj_list (List.map 
       (fun (typestr, typetype) -> 
-        (PC.pack 
-          (PC.word typestr)
-          (fun _ -> typetype)))
-      type_keywords));;
+        (PC.pack (PC.word typestr) (fun _ -> typetype)))
+      type_keywords)));;
 
 (* let rec pointer_type_nt s =
   (PC.packaten
@@ -131,10 +145,11 @@ let rec func_type_nt s =
     (fun (_, params_t) -> PTFunc params_t)) s
 
 and type_nt s = 
-  (PC.wrapws (PC.packaten
-    base_type_nt
-    (PC.wrapws type'_nt)
-    part_types_to_type)) s
+  (PC.wrapws 
+    (PC.packaten
+      base_type_nt
+      (PC.wrapws type'_nt)
+      part_types_to_type)) s
 
 and type'_nt s =
   (PC.disj_list [
@@ -165,8 +180,8 @@ type expression =
 let const_nt =
   PC.pack
     (PC.disj_list [
-      (PC.pack int_nt (fun n -> Int n));
       (PC.pack float_nt (fun f -> Flt f));
+      (PC.pack int_nt (fun n -> Int n));
       (PC.pack char_nt (fun c -> Chr c));
       (PC.pack string_nt (fun s -> Str s));
     ])
@@ -241,65 +256,78 @@ type statement =
   | IfStatement of expression * statement list * statement list option
   | ForStatement of (statement * statement * statement) * statement list
   | FuncDecStatement of type_expr * string * (type_expr * string) list * statement list option
-  | VariableDec of type_expr * string list
+  | VariableDec of type_expr * (string * expression option) list
   | Assignment of expression * expression
   | ExprStatement of expression
-  | ReturnStatement of expression;;
+  | ReturnStatement of expression
+  | TypedefStatement of type_expr * string
+  | StructDec of string option * statement list;;
+
+(* Typedef *)
+let typedef_nt = 
+  PC.packaten4
+    (PC.word "typedef")
+    (PC.wrapws type_nt)
+    (PC.wrapws var_nt)
+    (PC.char ';')
+    (fun (_, t, name, _) -> TypedefStatement (t, name));;
 
 (* Variable Declaration *)
+let unzip lst = (
+  List.map (fun (a, b) -> a) lst,
+  List.map (fun (a, b) -> b) lst
+);;
 
 let vardec_nt =
-  (PC.packaten
-    (PC.caten 
-      type_nt
-      (PC.packaten
+  PC.packaten3
+    type_nt
+    (PC.separatedplus
+      (PC.caten
         (PC.wrapws var_nt)
-        (PC.star (PC.packaten (PC.char ',') (PC.wrapws var_nt) (fun (_, v) -> v)))
-        (fun (first, rest) -> first :: rest)))
+        (PC.maybe (PC.packaten
+          (PC.wrapws (PC.char '='))
+          expression_nt
+          (fun (_, value) -> value))))
+      (PC.char ','))
     (PC.char ';')
-    (fun ((vars_type, vars_names), _) -> VariableDec (vars_type, vars_names)));;
+    (fun (vars_type, vars_and_vals, _) -> VariableDec (vars_type, vars_and_vals));;
 
 (* Assignment *)
 let assignemnt_nt =
-  PC.packaten
+  PC.packaten4
     expression_nt
-    (PC.caten
-      (PC.wrapws (PC.char '='))
-      (PC.caten
-        expression_nt
-        (PC.char ';')))
-    (fun (lhs, (_, (rhs, _))) -> Assignment (lhs, rhs));;
+    (PC.wrapws (PC.char '='))
+    expression_nt
+    (PC.char ';')
+    (fun (lhs, _, rhs, _) -> Assignment (lhs, rhs));;
 
 (* Return *)
 
 let return_nt =
-  PC.packaten
+  PC.packaten3
     (PC.word "return")
-    (PC.caten
-      expression_nt
-      (PC.char ';'))
-    (fun (_, (e, _)) -> ReturnStatement e);;
+    expression_nt
+    (PC.char ';')
+    (fun (_, e, _) -> ReturnStatement e);;
 
 (* if parser *)
 
 let rec if_nt s =
-  ((PC.packaten
-    (PC.caten 
-      (PC.wrapws (PC.word "if"))
-      (PC.wrapws (PC.paren expression_nt)))
+  (PC.packaten3
+    (PC.wrapws (PC.word "if"))
+    (PC.wrapws (PC.paren expression_nt))
     (PC.curparen (PC.star statement_nt))
-    (fun ((_, pred), stmts) -> IfStatement (pred, stmts, None))) s)
+    (fun (_, pred, stmts) -> IfStatement (pred, stmts, None))) s
 
 (* for parser *)
 
 and for_nt s = 
-  ((PC.packaten
-    (PC.caten 
-      (PC.wrapws (PC.word "for"))
-      (PC.wrapws (PC.paren
-        (PC.caten statement_nt (PC.caten statement_nt statement_nt)))))
+  (PC.packaten3
+    (PC.wrapws (PC.word "for"))
+    (PC.wrapws (PC.paren
+        (PC.caten3 statement_nt statement_nt statement_nt)))
     (PC.curparen (PC.star statement_nt))
-    (fun ((_, (init, (pred, next))), body) -> ForStatement ((init, pred, next), body))) s)
+    (fun (_, (init, pred, next), body) -> ForStatement ((init, pred, next), body))) s
 
 and stmtexpr_nt s = 
   (PC.packaten 
@@ -310,18 +338,38 @@ and stmtexpr_nt s =
 (* function parser *)
 
 and func_dec_nt s = 
-  (PC.packaten 
+  (PC.packaten4
     type_nt
-    (PC.caten 
-      var_nt
-      (PC.caten
-        (PC.paren (PC.separated (PC.caten type_nt var_nt) (PC.wrapws (PC.char ','))))
-        (PC.disj
-          (PC.pack (PC.char ';') (fun _ -> None))
-          (PC.pack (PC.curparen (PC.star statement_nt)) (fun s -> Some(s))))))
-    (fun (t, (name, (params, body))) -> FuncDecStatement (t, name, params, body))) s
+    var_nt
+    (PC.paren 
+      (PC.separated 
+        (PC.caten type_nt var_nt)
+        (PC.wrapws (PC.char ','))))
+    (PC.disj
+      (PC.pack (PC.char ';') (fun _ -> None))
+      (PC.pack (PC.curparen (PC.star statement_nt)) (fun s -> Some(s))))
+    (fun (t, name, params, body) -> FuncDecStatement (t, name, params, body))) s
 
-and statement_nt s = (PC.wrapws (PC.disj_list [return_nt; for_nt; if_nt; func_dec_nt; vardec_nt; assignemnt_nt; stmtexpr_nt;]) s);;
+and structdec_nt s =
+  (PC.packaten4
+    (PC.word "struct")
+    (PC.maybe (PC.wrapws var_nt))
+    (PC.curparen
+      (PC.star statement_nt))
+    (PC.char ';')
+    (fun (_, name, members, _) -> StructDec (name, members))) s
+
+and statement_nt s = (PC.wrapws (PC.disj_list [
+  typedef_nt;
+  structdec_nt;
+  return_nt;
+  for_nt;
+  if_nt;
+  func_dec_nt;
+  vardec_nt;
+  assignemnt_nt;
+  stmtexpr_nt;
+]) s);;
 
 exception X_no_match2 of string;;
 
