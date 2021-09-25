@@ -160,6 +160,76 @@ let type_check stmts =
           
       | TypedefStatement (t, name) -> type_check ((name, t) :: type_lookup) var_lookup stmts
 
-      | StructDec (Some name, members) -> type_check ((name, TStruct (parse_struct_members members)) :: type_lookup) var_lookup stmts
+      | StructDec (Some name, members) -> 
+          type_check 
+            ((name, TStruct (parse_struct_members members)) :: type_lookup)
+            var_lookup
+            stmts
+
       | StructDec (None, members) -> type_check type_lookup var_lookup stmts
   in type_check type_lookup var_lookup stmts;;
+
+let resolve_typedefs stmts =
+  
+  let type_lookup = create_type_lookup_table stmts in
+  
+  let stmts = List.filter (function
+    | StructDec _ -> false
+    | TypedefStatement _ -> false
+    | _ -> true) stmts in
+  
+  let resolve_type typelu =
+    let rec resolve_type = function
+      | TPointer t -> TPointer (resolve_type t)
+      | TArr (t, size) -> TArr (resolve_type t, size)
+      | TFunc (ret_t, params_t) -> TFunc (resolve_type ret_t, List.map resolve_type params_t)
+      | Unkn name -> (match (List.assoc_opt name typelu) with
+        | Some t -> resolve_type t
+        | None -> raise (TypeError "unknown type"))
+      | TStruct members -> TStruct (List.map (fun (name, t) -> (name, resolve_type t)) members)
+      | t -> t
+  in resolve_type in
+  
+  let rec resolve_typedefs typelu stmts =
+    match stmts with
+    | [] -> []
+    | stmt :: stmts -> match stmt with
+      | IfStatement (test, then_stmts, else_stmts) -> (IfStatement (
+          test,
+          resolve_typedefs typelu then_stmts,
+          (match else_stmts with
+            | None -> None
+            | Some else_stmts -> Some (resolve_typedefs typelu else_stmts))
+        )) :: (resolve_typedefs typelu stmts)
+
+    | ForStatement ((s1, s2, s3), body) -> (ForStatement (
+        (List.nth (resolve_typedefs typelu [s1]) 0,
+         List.nth (resolve_typedefs typelu [s2]) 0,
+         List.nth (resolve_typedefs typelu [s3]) 0),
+         resolve_typedefs typelu body
+      )) :: (resolve_typedefs typelu stmts)
+
+    | FuncDecStatement (ret_t, name, params, body) -> 
+        let resolve_params = List.map (fun (t, name) -> (resolve_type typelu t, name)) params in
+        (FuncDecStatement (
+          resolve_type typelu ret_t,
+          name,
+          resolve_params,
+          (match body with
+            | Some body -> Some (resolve_typedefs typelu body)
+            | None -> None)
+        )) :: (resolve_typedefs typelu stmts)
+    
+    | VariableDec (t, names_and_vals) -> (VariableDec (
+        resolve_type typelu t, names_and_vals
+      )) :: (resolve_typedefs typelu stmts)
+    
+    | TypedefStatement (t, name) -> (TypedefStatement (t, name)) ::
+        (resolve_typedefs ((name, t) :: typelu) stmts)
+    
+    | StructDec (Some name, members) -> (StructDec (Some name, resolve_typedefs typelu members)) ::
+        (resolve_typedefs ((name, TStruct (parse_struct_members members)) :: typelu) stmts)
+    
+    | stmt -> stmt :: (resolve_typedefs typelu stmts) in
+    
+    resolve_typedefs type_lookup stmts;;

@@ -77,7 +77,7 @@ let string_nt =
 let var_nt = 
   (PC.packaten
     (PC.range_ci 'A' 'Z')
-    (PC.star (PC.disj_list [PC.range_ci 'A' 'Z'; PC.one_of "_*+=?!@#$<>"; PC.range '0' '9']))
+    (PC.star (PC.disj_list [PC.range_ci 'A' 'Z'; PC.one_of "_*=?!@#$<>"; PC.range '0' '9']))
     (fun (first, rest) -> String.concat "" [String.make 1 first; list_to_string rest]));;
 
 (* type annotation parser *)
@@ -213,6 +213,7 @@ let rec right_unary_nt s =
   (PC.packaten
     base_expr_nt
     (PC.star (PC.disj_list [
+      PC.pack (PC.disj_list [PC.word "++"; PC.word "--";]) (fun op e -> PostUnrayExpression(e, list_to_string op));
       PC.pack (PC.paren (PC.separated expression_nt (PC.char ','))) (fun args e -> FuncCall (e, args));
       PC.pack (PC.sqrparen expression_nt) (fun index e -> Index (e, index));
       PC.packaten (PC.char '.') var_nt (fun (_, v) e ->  Accessor (e, v));
@@ -220,8 +221,15 @@ let rec right_unary_nt s =
     ]))
     (fun (base, ops) -> List.fold_left (fun e pre_exp -> pre_exp e) base ops)) s
 
+and left_unary_nt s =
+  let left_unary_ops = ["++"; "--"; "!"; "~"; "+"; "-"; "*"; "&"] in
+  (PC.packaten
+    (PC.star (PC.disj_list (List.map PC.word left_unary_ops)))
+    right_unary_nt
+    (fun (ops, e) -> List.fold_right (fun op e -> PreUnaryExpression (list_to_string op, e)) ops e)) s
+
 and binary_expr_nt s =
-  (List.fold_left (fun parser pre_parser -> pre_parser parser) right_unary_nt
+  (List.fold_left (fun parser pre_parser -> pre_parser parser) left_unary_nt
   (List.map 
     (fun ops parser -> 
       (PC.packaten
@@ -313,21 +321,24 @@ let return_nt =
 (* if parser *)
 
 let rec if_nt s =
-  (PC.packaten3
+  (PC.packaten4
     (PC.wrapws (PC.word "if"))
     (PC.wrapws (PC.paren expression_nt))
     (PC.curparen (PC.star statement_nt))
-    (fun (_, pred, stmts) -> IfStatement (pred, stmts, None))) s
+    (PC.maybe (PC.packaten
+      (PC.wrapws (PC.word "else"))
+      (PC.curparen (PC.star statement_nt))
+      (fun (_, stmts) -> stmts)))
+    (fun (_, pred, stmts, else_stmts) -> IfStatement (pred, stmts, else_stmts))) s
 
 (* for parser *)
-
 and for_nt s = 
   (PC.packaten3
     (PC.wrapws (PC.word "for"))
     (PC.wrapws (PC.paren
-        (PC.caten3 statement_nt statement_nt statement_nt)))
+        (PC.caten3 statement_nt statement_nt expression_nt (* TODO: change to a statement without a ; *))))
     (PC.curparen (PC.star statement_nt))
-    (fun (_, (init, pred, next), body) -> ForStatement ((init, pred, next), body))) s
+    (fun (_, (init, pred, next), body) -> ForStatement ((init, pred, ExprStatement next), body))) s
 
 and stmtexpr_nt s = 
   (PC.packaten 

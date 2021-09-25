@@ -184,10 +184,23 @@ let one_of_ci = make_one_of char_ci;;
 
 let nt_whitespace = const (fun ch -> ch <= ' ');;
 
+let comment_nt =
+  let nt = 
+    (star (disj
+      (not_followed_by (char '*') (char '/'))
+      (const (fun c -> c != '*')))) in
+  wrap (word "/*") nt (word "*/");;
+
+let line_comment_nt =
+  caten (word "//") (star (const (fun c -> c != '\n')))
+
 let whitespaces_nt = 
-  (pack 
-    (star (one_of " \n\t\r"))
-    (fun _ -> ' '));;
+  let packer = fun _ -> ' ' in
+  (star (disj_list [
+    (pack (one_of " \n\t\r") packer);
+    (pack comment_nt packer);
+    (pack line_comment_nt packer)
+  ]));;
 
 let wrapws nt = wrap whitespaces_nt nt whitespaces_nt;;
 
