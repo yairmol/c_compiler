@@ -1,6 +1,8 @@
 open Pc;;
 (* #use "pc.ml";; *)
 
+exception ParserError of string;;
+
 type const = 
   | Int of int
   | Chr of char
@@ -133,7 +135,7 @@ let rec part_types_to_type (bt, pts) =
     | PTPointer :: pts -> TPointer (part_types_to_type (bt, pts))
     | (PTFunc params) :: [] -> TFunc (bt, params)
     | [] -> bt
-    | _ -> raise PC.X_no_match;;
+    | _ -> raise (ParserError "error while parsing types") ;;
 
 let rec func_type_nt s =
   (PC.packaten
@@ -175,6 +177,7 @@ type expression =
   | BinaryExpresion of string * expression * expression
   | TernaryExpression of expression * expression * expression
   | Accessor of expression * string
+  | PAccessor of expression * string
   | Index of expression * expression;;
 
 let const_nt =
@@ -217,7 +220,7 @@ let rec right_unary_nt s =
       PC.pack (PC.paren (PC.separated expression_nt (PC.char ','))) (fun args e -> FuncCall (e, args));
       PC.pack (PC.sqrparen expression_nt) (fun index e -> Index (e, index));
       PC.packaten (PC.char '.') var_nt (fun (_, v) e ->  Accessor (e, v));
-      PC.packaten (PC.word "->") var_nt (fun (_, v) e -> Accessor (e, v));
+      PC.packaten (PC.word "->") var_nt (fun (_, v) e -> PAccessor (e, v));
     ]))
     (fun (base, ops) -> List.fold_left (fun e pre_exp -> pre_exp e) base ops)) s
 
@@ -382,7 +385,7 @@ and statement_nt s = (PC.wrapws (PC.disj_list [
   stmtexpr_nt;
 ]) s);;
 
-exception X_no_match2 of string;;
+(* exception X_no_match2 of string;; *)
 
 let file_to_string f =
   let ic = open_in f in
@@ -390,6 +393,6 @@ let file_to_string f =
   close_in ic;
   s;;
 
-let program_nt s = match ((PC.star statement_nt) (string_to_list s)) with
-  | (stmts, []) -> stmts
-  | (stmts, rem) -> (raise (X_no_match2 (list_to_string rem)));;
+let program_nt s = (PC.star statement_nt) ((string_to_list s), (0, 0));;
+  (* | (stmts, []) -> stmts
+  | (stmts, rem) -> (raise (X_no_match2 (list_to_string rem)));; *)

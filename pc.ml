@@ -39,14 +39,20 @@ module PC = struct
   
 exception X_not_yet_implemented;;
 
-exception X_no_match;;
+exception X_no_match of (int * int);;
 
-let const pred =
-  function 
-  | [] -> raise X_no_match
+let next_loc e loc = 
+  let (row, col) = loc in
+  if e = '\n' then (row + 1, 0) else (row, col + 1);;
+
+type parser_inp = char list * (int * int);;
+
+let const pred ((s, loc): parser_inp) =
+  match s with
+  | [] -> raise (X_no_match loc)
   | e :: s ->
-     if (pred e) then (e, s)
-     else raise X_no_match;;
+     if (pred e) then (e, (s, (next_loc e loc)))
+     else raise (X_no_match loc);;
 
 let caten nt1 nt2 s =
   let (e1, s) = (nt1 s) in
@@ -84,10 +90,8 @@ let packaten4 nt1 nt2 nt3 nt4 f s = pack (caten4 nt1 nt2 nt3 nt4) f s;;
 let packaten5 nt1 nt2 nt3 nt4 nt5 f s = pack (caten5 nt1 nt2 nt3 nt4 nt5) f s;;
 
 let wrap left nt right =
-  packaten
-    (caten left nt)
-    right
-    (fun ((_, e), _) -> e);;
+  packaten3 left nt right
+    (fun (_, e, _) -> e);;
 
 let nt_epsilon s = ([], s);;
 
@@ -99,57 +103,63 @@ let caten_list nts =
     nts
     nt_epsilon;;
 
-let disj nt1 nt2 =
-  fun s ->
-  try (nt1 s)
-  with X_no_match -> (nt2 s);;
+let max_loc ((row1, col1) as loc1) ((row2, col2) as loc2) = 
+  if row1 > row2 then loc1
+  else if row1 = row2 then (if col1 > col2 then loc1 else loc2)
+  else loc1;;
 
-let nt_none _ = raise X_no_match;;
+let disj nt1 nt2 s =
+    try (nt1 s) with (X_no_match loc1) -> 
+    try (nt2 s) with (X_no_match loc2) -> 
+      raise (X_no_match (max_loc loc1 loc2));;
+
+let nt_none (_, loc) = raise (X_no_match loc);;
   
 let disj_list nts = List.fold_right disj nts nt_none;;
 
 let delayed thunk s =
   thunk() s;;
 
-let nt_end_of_input = function
-  | []  -> ([], [])
-  | _ -> raise X_no_match;;
+let nt_end_of_input (s, loc) = match s with
+  | []  -> ([], ([], loc))
+  | _ -> raise (X_no_match loc);;
 
 let rec star nt s =
   try let (e, s) = (nt s) in
       let (es, s) = (star nt s) in
       (e :: es, s)
-  with X_no_match -> ([], s);;
+  with (X_no_match loc) -> ([], s);;
 
 let plus nt =
-  pack (caten nt (star nt))
-       (fun (e, es) -> (e :: es));;
+  packaten nt (star nt) (fun (e, es) -> (e :: es));;
 
-let guard nt pred s =
-  let ((e, _) as result) = (nt s) in
+let guard nt pred (s, loc) =
+  let ((e, _) as result) = (nt (s, loc)) in
   if (pred e) then result
-  else raise X_no_match;;
+  else raise (X_no_match loc);;
   
-let diff nt1 nt2 s =
-  match (let result = nt1 s in
-	 try let _ = nt2 s in
-	     None
-	 with X_no_match -> Some(result)) with
-  | None -> raise X_no_match
+let diff nt1 nt2 (s, loc) =
+  let to_match = 
+    let result = nt1 (s, loc) in
+    try let _ = nt2 (s, loc) in None
+    with (X_no_match _) -> Some(result) in
+  match to_match with
+  | None -> raise (X_no_match loc)
   | Some(result) -> result;;
 
-let not_followed_by nt1 nt2 s =
-  match (let ((_, s) as result) = (nt1 s) in
-	 try let _ = (nt2 s) in
-	     None
-	 with X_no_match -> (Some(result))) with
-  | None -> raise X_no_match
+let not_followed_by nt1 nt2 (s, loc) =
+  let to_match =
+    let ((_, s) as result) = nt1 (s, loc) in
+	  try let _ = (nt2 s) in None
+	  with (X_no_match _) -> (Some(result)) in
+  match to_match with
+  | None -> raise (X_no_match loc)
   | Some(result) -> result;;
 	  
 let maybe nt s =
   try let (e, s) = (nt s) in
       (Some(e), s)
-  with X_no_match -> (None, s);;
+  with (X_no_match _) -> (None, s);;
 
 (* useful general parsers for working with text *)
 
@@ -184,7 +194,7 @@ let one_of_ci = make_one_of char_ci;;
 
 let nt_whitespace = const (fun ch -> ch <= ' ');;
 
-let comment_nt =
+let comment_nt = 
   let nt = 
     (star (disj
       (not_followed_by (char '*') (char '/'))
@@ -236,8 +246,8 @@ let separatedplus nt sep =
     (star (packaten sep nt (fun (_, e) -> e)))
     (fun (e, es) -> e :: es));;
 
-let make_range leq ch1 ch2 (s : char list) =
-  const (fun ch -> (leq ch1 ch) && (leq ch ch2)) s;;
+let make_range leq ch1 ch2 =
+  const (fun ch -> (leq ch1 ch) && (leq ch ch2));;
 
 let range = make_range (fun ch1 ch2 -> ch1 <= ch2);;
 
@@ -246,7 +256,7 @@ let range_ci =
 	      (lowercase_ascii ch1) <=
 		(lowercase_ascii ch2));;
 
-let nt_any (s : char list) = const (fun ch -> true) s;;
+let nt_any = const (fun ch -> true);;
 
 let trace_pc desc nt s =
   try let ((e, s') as args) = (nt s)
@@ -256,11 +266,13 @@ let trace_pc desc nt s =
 		     (list_to_string s)
 		     (list_to_string s') ;
        args)
-  with X_no_match ->
-    (Printf.printf ";;; %s failed on \"%s\"\n"
+  with (X_no_match (row, col)) ->
+    (Printf.printf ";;; %s failed on \"%s\" at row: %d col: %d\n"
 		   desc
-		   (list_to_string s) ;
-     raise X_no_match);;
+		   (list_to_string s)
+       row
+       col ;
+     raise (X_no_match (row, col)));;
 
 (* testing the parsers *)
 
