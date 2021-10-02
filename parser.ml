@@ -170,17 +170,23 @@ and type'_nt s =
 
 (***** Expressions *****)
 
+type location = int * int;;
+
 type expression =
   | Const of const
   | Var of string
-  | FuncCall of expression * expression list
-  | PreUnaryExpression of string * expression
-  | PostUnrayExpression of expression * string
-  | BinaryExpresion of string * expression * expression
-  | TernaryExpression of expression * expression * expression
-  | Accessor of expression * string
-  | PAccessor of expression * string
-  | Index of expression * expression;;
+  | FuncCall of expression_loc * expression_loc list
+  | PostUnrayExpression of expression_loc * string
+  | PreUnaryExpression of string * expression_loc
+  | BinaryExpresion of string * expression_loc * expression_loc
+  | TernaryExpression of expression_loc * expression_loc * expression_loc
+  | Accessor of expression_loc * string
+  | PAccessor of expression_loc * string
+  | Index of expression_loc * expression_loc
+
+and expression_loc = Expression of expression * location;;
+
+let exprloc_pack nt = PC.packloc nt (fun e loc -> Expression (e, loc))
 
 let const_nt =
   PC.pack
@@ -209,46 +215,36 @@ let const_nt =
  * each list contains operators with the same precedance
  * the lists are ordered by precedance where the first list has the least precedance *)
 
-let base_expr_nt =
-  PC.disj
-    (PC.pack var_nt (fun v -> Var v))
-    const_nt;;
+ let base_expr_nt =
+  exprloc_pack
+    (PC.disj
+      (PC.pack var_nt (fun v -> Var v))
+      const_nt);;
 
 let rec right_unary_nt s = 
   (PC.packaten
     base_expr_nt
     (PC.star (PC.disj_list [
-      PC.pack (PC.disj_list [PC.word "++"; PC.word "--";]) (fun op e -> PostUnrayExpression(e, list_to_string op));
-      PC.pack (PC.paren (PC.separated expression_nt (PC.char ','))) (fun args e -> FuncCall (e, args));
-      PC.pack (PC.sqrparen expression_nt) (fun index e -> Index (e, index));
-      PC.packaten (PC.char '.') var_nt (fun (_, v) e ->  Accessor (e, v));
-      PC.packaten (PC.word "->") var_nt (fun (_, v) e -> PAccessor (e, v));
+      PC.packloc (PC.disj_list [PC.word "++"; PC.word "--";]) (fun op loc e -> Expression (PostUnrayExpression(e, list_to_string op), loc));
+      PC.packloc (PC.paren (PC.separated expression_nt (PC.char ','))) (fun args loc e -> Expression (FuncCall (e, args), loc));
+      PC.packloc (PC.sqrparen expression_nt) (fun index loc e -> Expression (Index (e, index), loc));
+      PC.packatenloc (PC.char '.') var_nt (fun (_, v) loc e -> Expression (Accessor (e, v), loc));
+      PC.packatenloc (PC.word "->") var_nt (fun (_, v) loc e -> Expression (PAccessor (e, v), loc));
     ]))
     (fun (base, ops) -> List.fold_left (fun e pre_exp -> pre_exp e) base ops)) s
 
 and left_unary_nt s =
   let left_unary_ops = ["++"; "--"; "!"; "~"; "+"; "-"; "*"; "&"] in
   (PC.packaten
-    (PC.star (PC.disj_list (List.map PC.word left_unary_ops)))
+    (PC.star (PC.disj_list 
+      (List.map 
+        (fun s -> (PC.packloc (PC.word s) (fun op loc -> (op, loc))))
+        left_unary_ops)))
     right_unary_nt
-    (fun (ops, e) -> List.fold_right (fun op e -> PreUnaryExpression (list_to_string op, e)) ops e)) s
+    (fun (ops, e) -> List.fold_right (fun (op, loc) e -> Expression (PreUnaryExpression (list_to_string op, e), loc)) ops e)) s
 
 and binary_expr_nt s =
-  (List.fold_left (fun parser pre_parser -> pre_parser parser) left_unary_nt
-  (List.map 
-    (fun ops parser -> 
-      (PC.packaten
-        parser
-        (PC.star
-          (PC.caten
-            (PC.disj_list (List.map (fun op -> PC.wrapws (PC.word op)) ops))
-            parser))
-        (fun (e, es) -> 
-          List.fold_left
-            (fun e1 (op, e2) -> BinaryExpresion (list_to_string op, e1, e2))
-            e
-            es)))
-  [
+  let binary_ops = [
     ["*"; "/"; "%"];
     ["+"; "-"];
     ["<<"; ">>"];
@@ -259,38 +255,58 @@ and binary_expr_nt s =
     ["|"];
     ["&&"];
     ["||"];
-  ])) s
+  ] in
+  (List.fold_left 
+    (fun parser pre_parser -> pre_parser parser) 
+    left_unary_nt
+    (List.map 
+      (fun ops parser -> 
+        (PC.packaten
+          parser
+          (PC.star
+            (PC.caten
+              (PC.disj_list
+                (List.map (fun op -> PC.wrapws (PC.word op)) ops))
+              parser))
+          (fun (e, es) -> 
+            List.fold_left
+              (fun ((Expression (e1, loc)) as expr1) (op, ((Expression (e2, loc)) as expr2)) -> 
+                Expression (BinaryExpresion (list_to_string op, expr1, expr2), loc))
+              e
+              es))) binary_ops)) s
 
 and expression_nt s = (PC.wrapws binary_expr_nt) s;;
 
 (****** Statements ******)
 
 type statement =
-  | IfStatement of expression * statement list * statement list option
-  | ForStatement of (statement * statement * statement) * statement list
-  | FuncDecStatement of type_expr * string * (type_expr * string) list * statement list option
-  | VariableDec of type_expr * (string * expression option) list
-  | Assignment of expression * expression
-  | ExprStatement of expression
-  | ReturnStatement of expression
+  | IfStatement of expression_loc * statement_loc list * statement_loc list option
+  | ForStatement of (statement_loc * statement_loc * statement_loc) * statement_loc list
+  | FuncDecStatement of type_expr * string * (type_expr * string) list * statement_loc list option
+  | VariableDec of type_expr * (string * expression_loc option) list
+  | Assignment of expression_loc * expression_loc
+  | ExprStatement of expression_loc
+  | ReturnStatement of expression_loc
   | TypedefStatement of type_expr * string
-  | StructDec of string option * statement list;;
+  | StructDec of string option * statement_loc list
+
+and statement_loc = Statement of statement * location;;
 
 (* Typedef *)
 let typedef_nt = 
-  PC.with_errormsg (PC.packaten4
+  PC.with_errormsg (PC.packatenloc4
     (PC.word "typedef")
     (PC.with_errormsg (PC.wrapws type_nt) "expected type")
     (PC.with_errormsg (PC.wrapws var_nt) "expected new type name")
     (PC.char ';')
-    (fun (_, t, name, _) -> TypedefStatement (t, name)))
+    (fun (_, t, name, _) loc -> Statement (TypedefStatement (t, name), loc)))
   "Failed to parse typedef";;
 
 (* Variable Declaration *)
 
 let vardec_nt =
   PC.with_errormsg 
-  (PC.packaten3
+  (PC.packatenloc3
     type_nt
     (PC.separatedplus
       (PC.caten
@@ -301,29 +317,29 @@ let vardec_nt =
           (fun (_, value) -> value))))
       (PC.char ','))
     (PC.char ';')
-    (fun (vars_type, vars_and_vals, _) -> VariableDec (vars_type, vars_and_vals)))
+    (fun (vars_type, vars_and_vals, _) loc -> Statement (VariableDec (vars_type, vars_and_vals), loc)))
   "Failed to parse variable declaration";;
 
 (* Assignment *)
 let assignemnt_nt =
   PC.with_errormsg
-  (PC.packaten4
+  (PC.packatenloc4
     expression_nt
     (PC.wrapws (PC.char '='))
     expression_nt
     (PC.char ';')
-    (fun (lhs, _, rhs, _) -> Assignment (lhs, rhs)))
+    (fun (lhs, _, rhs, _) loc -> Statement (Assignment (lhs, rhs), loc)))
   "Failed to parse assignment";;
 
 (* Return *)
 
 let return_nt =
   PC.with_errormsg
-  (PC.packaten3
+  (PC.packatenloc3
     (PC.word "return")
     expression_nt
     (PC.char ';')
-    (fun (_, e, _) -> ReturnStatement e))
+    (fun (_, e, _) loc -> Statement (ReturnStatement e, loc)))
   "Failed to parse return statement";;
 
 let rec sequence_nt s = 
@@ -334,7 +350,7 @@ let rec sequence_nt s =
 (* if parser *)
 and if_nt s =
   (PC.with_errormsg
-  (PC.packaten4
+  (PC.packatenloc4
     (PC.wrapws (PC.word "if"))
     (PC.wrapws (PC.paren expression_nt))
     (PC.with_errormsg sequence_nt "Failed to parse if body")
@@ -342,30 +358,31 @@ and if_nt s =
       (PC.wrapws (PC.word "else"))
       sequence_nt
       (fun (_, stmts) -> stmts)))
-    (fun (_, pred, stmts, else_stmts) -> IfStatement (pred, stmts, else_stmts)))
+    (fun (_, pred, stmts, else_stmts) loc -> Statement (IfStatement (pred, stmts, else_stmts), loc)))
    "Failed to parse if statement") s
 
 (* for parser *)
 and for_nt s = 
   (PC.with_errormsg
-  (PC.packaten3
+  (PC.packatenloc3
     (PC.wrapws (PC.word "for"))
     (PC.wrapws (PC.paren
         (PC.caten3 statement_nt statement_nt expression_nt (* TODO: change to a statement without a ; *))))
     sequence_nt
-    (fun (_, (init, pred, next), body) -> ForStatement ((init, pred, ExprStatement next), body)))
+    (fun (_, (init, pred, ((Expression (next, loc)) as enext)), body) loc -> 
+      Statement (ForStatement ((init, pred, Statement (ExprStatement enext, loc)), body), loc)))
    "Failed to parse for statement") s
 
 and stmtexpr_nt s = 
-  (PC.packaten 
+  (PC.packatenloc 
     expression_nt
     (PC.char ';')
-    (fun (e, _) -> ExprStatement e)) s
+    (fun (e, _) loc -> Statement (ExprStatement e, loc))) s
 
 (* function parser *)
 
 and func_dec_nt s = 
-  (PC.packaten4
+  (PC.packatenloc4
     type_nt
     var_nt
     (PC.paren 
@@ -375,15 +392,15 @@ and func_dec_nt s =
     (PC.disj
       (PC.pack (PC.char ';') (fun _ -> None))
       (PC.pack sequence_nt (fun s -> Some(s))))
-    (fun (t, name, params, body) -> FuncDecStatement (t, name, params, body))) s
+    (fun (t, name, params, body) loc -> Statement (FuncDecStatement (t, name, params, body), loc))) s
 
 and structdec_nt s =
-  (PC.packaten4
+  (PC.packatenloc4
     (PC.word "struct")
     (PC.maybe (PC.wrapws var_nt))
     sequence_nt
     (PC.char ';')
-    (fun (_, name, members, _) -> StructDec (name, members))) s
+    (fun (_, name, members, _) loc -> Statement (StructDec (name, members), loc))) s
 
 and statement_nt s = (PC.wrapws (PC.disj_list [
   typedef_nt;

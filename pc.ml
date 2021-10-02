@@ -94,10 +94,19 @@ let pack nt f s =
   let (e, s) = (nt s) in
   ((f e), s);;
 
+let packloc nt f (s, loc) = 
+  let (e, rest) = nt (s, loc) in
+  ((f e loc), rest);;
+
 let packaten nt1 nt2 f s = pack (caten nt1 nt2) f s;;
 let packaten3 nt1 nt2 nt3 f s = pack (caten3 nt1 nt2 nt3) f s;;
 let packaten4 nt1 nt2 nt3 nt4 f s = pack (caten4 nt1 nt2 nt3 nt4) f s;;
 let packaten5 nt1 nt2 nt3 nt4 nt5 f s = pack (caten5 nt1 nt2 nt3 nt4 nt5) f s;;
+
+let packatenloc nt1 nt2 f s = packloc (caten nt1 nt2) f s;;
+let packatenloc3 nt1 nt2 nt3 f s = packloc (caten3 nt1 nt2 nt3) f s;;
+let packatenloc4 nt1 nt2 nt3 nt4 f s = packloc (caten4 nt1 nt2 nt3 nt4) f s;;
+let packatenloc5 nt1 nt2 nt3 nt4 nt5 f s = packloc (caten5 nt1 nt2 nt3 nt4 nt5) f s;;
 
 let wrap left nt right =
   packaten3 left nt right
