@@ -44,7 +44,7 @@ let float_nt =
 let special_chars = list_to_string ['\''; '\\'; '\"'];;
 
 let char_nt =
-  (PC.wrap
+  (PC.with_errormsg (PC.wrap
     (PC.char '\'')
     (PC.disj_list [
       PC.diff 
@@ -55,12 +55,12 @@ let char_nt =
         (PC.one_of special_chars)
         (fun (_, ch) -> ch)
     ])
-    (PC.char '\''));;
+    (PC.char '\'')) "Failed while parsing a char literal");;
 
 (* string parser *)
 
 let string_nt =
-  (PC.pack
+  (PC.with_errormsg (PC.pack
     (PC.wrap
       (PC.char '"')
       (PC.star (PC.disj_list [
@@ -73,7 +73,7 @@ let string_nt =
           (fun (_, ch) -> ch)
       ]))
       (PC.char '"'))
-    list_to_string);;
+    list_to_string) "Failed while parsing a string literal");;
 
 (* Var *)
 let var_nt = 
@@ -147,11 +147,13 @@ let rec func_type_nt s =
     (fun (_, params_t) -> PTFunc params_t)) s
 
 and type_nt s = 
+  (PC.with_errormsg
   (PC.wrapws 
     (PC.packaten
       base_type_nt
       (PC.wrapws type'_nt)
-      part_types_to_type)) s
+      part_types_to_type))
+   "Failed to parse type") s
 
 and type'_nt s =
   (PC.disj_list [
@@ -276,21 +278,19 @@ type statement =
 
 (* Typedef *)
 let typedef_nt = 
-  PC.packaten4
+  PC.with_errormsg (PC.packaten4
     (PC.word "typedef")
-    (PC.wrapws type_nt)
-    (PC.wrapws var_nt)
+    (PC.with_errormsg (PC.wrapws type_nt) "expected type")
+    (PC.with_errormsg (PC.wrapws var_nt) "expected new type name")
     (PC.char ';')
-    (fun (_, t, name, _) -> TypedefStatement (t, name));;
+    (fun (_, t, name, _) -> TypedefStatement (t, name)))
+  "Failed to parse typedef";;
 
 (* Variable Declaration *)
-let unzip lst = (
-  List.map (fun (a, b) -> a) lst,
-  List.map (fun (a, b) -> b) lst
-);;
 
 let vardec_nt =
-  PC.packaten3
+  PC.with_errormsg 
+  (PC.packaten3
     type_nt
     (PC.separatedplus
       (PC.caten
@@ -301,47 +301,60 @@ let vardec_nt =
           (fun (_, value) -> value))))
       (PC.char ','))
     (PC.char ';')
-    (fun (vars_type, vars_and_vals, _) -> VariableDec (vars_type, vars_and_vals));;
+    (fun (vars_type, vars_and_vals, _) -> VariableDec (vars_type, vars_and_vals)))
+  "Failed to parse variable declaration";;
 
 (* Assignment *)
 let assignemnt_nt =
-  PC.packaten4
+  PC.with_errormsg
+  (PC.packaten4
     expression_nt
     (PC.wrapws (PC.char '='))
     expression_nt
     (PC.char ';')
-    (fun (lhs, _, rhs, _) -> Assignment (lhs, rhs));;
+    (fun (lhs, _, rhs, _) -> Assignment (lhs, rhs)))
+  "Failed to parse assignment";;
 
 (* Return *)
 
 let return_nt =
-  PC.packaten3
+  PC.with_errormsg
+  (PC.packaten3
     (PC.word "return")
     expression_nt
     (PC.char ';')
-    (fun (_, e, _) -> ReturnStatement e);;
+    (fun (_, e, _) -> ReturnStatement e))
+  "Failed to parse return statement";;
+
+let rec sequence_nt s = 
+  (PC.pack 
+    (PC.caten PC.lcurparen (PC.starcaten statement_nt PC.rcurparen))
+    (fun (_, (stmts, _)) -> stmts)) s
 
 (* if parser *)
-
-let rec if_nt s =
+and if_nt s =
+  (PC.with_errormsg
   (PC.packaten4
     (PC.wrapws (PC.word "if"))
     (PC.wrapws (PC.paren expression_nt))
-    (PC.curparen (PC.star statement_nt))
+    (PC.with_errormsg sequence_nt "Failed to parse if body")
     (PC.maybe (PC.packaten
       (PC.wrapws (PC.word "else"))
-      (PC.curparen (PC.star statement_nt))
+      sequence_nt
       (fun (_, stmts) -> stmts)))
-    (fun (_, pred, stmts, else_stmts) -> IfStatement (pred, stmts, else_stmts))) s
+    (fun (_, pred, stmts, else_stmts) -> IfStatement (pred, stmts, else_stmts)))
+   "Failed to parse if statement") s
 
 (* for parser *)
 and for_nt s = 
+  (PC.with_errormsg
   (PC.packaten3
     (PC.wrapws (PC.word "for"))
     (PC.wrapws (PC.paren
         (PC.caten3 statement_nt statement_nt expression_nt (* TODO: change to a statement without a ; *))))
-    (PC.curparen (PC.star statement_nt))
-    (fun (_, (init, pred, next), body) -> ForStatement ((init, pred, ExprStatement next), body))) s
+    sequence_nt
+    (fun (_, (init, pred, next), body) -> ForStatement ((init, pred, ExprStatement next), body)))
+   "Failed to parse for statement") s
 
 and stmtexpr_nt s = 
   (PC.packaten 
@@ -361,15 +374,14 @@ and func_dec_nt s =
         (PC.wrapws (PC.char ','))))
     (PC.disj
       (PC.pack (PC.char ';') (fun _ -> None))
-      (PC.pack (PC.curparen (PC.star statement_nt)) (fun s -> Some(s))))
+      (PC.pack sequence_nt (fun s -> Some(s))))
     (fun (t, name, params, body) -> FuncDecStatement (t, name, params, body))) s
 
 and structdec_nt s =
   (PC.packaten4
     (PC.word "struct")
     (PC.maybe (PC.wrapws var_nt))
-    (PC.curparen
-      (PC.star statement_nt))
+    sequence_nt
     (PC.char ';')
     (fun (_, name, members, _) -> StructDec (name, members))) s
 
@@ -393,6 +405,22 @@ let file_to_string f =
   close_in ic;
   s;;
 
-let program_nt s = (PC.star statement_nt) ((string_to_list s), (0, 0));;
+let rec info_to_string is_first = function
+  | PC.NoMatchInfo ((row, col), None, _) -> 
+      if is_first 
+        then Printf.sprintf "Error at row: %d col: %d\n" row col 
+        else "\n"
+  | PC.NoMatchInfo ((row, col), Some msg, None) -> 
+      if is_first
+        then Printf.sprintf "Error at row: %d col: %d. %s\n" row col msg
+        else Printf.sprintf "%s\n" msg
+  | PC.NoMatchInfo ((row, col), Some msg, Some info) -> 
+      if is_first
+        then Printf.sprintf "Error at row: %d col: %d. %s: %s" row col msg (info_to_string false info)
+        else Printf.sprintf "%s: %s" msg (info_to_string false info);;
+
+  let program_nt s = 
+  try (PC.starcaten statement_nt PC.nt_end_of_input) ((string_to_list s), (0, 0))
+  with PC.X_no_match info -> (Printf.printf "%s" (info_to_string true info); raise (PC.X_no_match info));;
   (* | (stmts, []) -> stmts
   | (stmts, rem) -> (raise (X_no_match2 (list_to_string rem)));; *)

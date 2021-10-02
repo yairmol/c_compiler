@@ -39,7 +39,10 @@ module PC = struct
   
 exception X_not_yet_implemented;;
 
-exception X_no_match of (int * int);;
+type no_match_info = 
+  NoMatchInfo of (int * int) * string option * no_match_info option;;
+
+exception X_no_match of no_match_info;;
 
 let next_loc e loc = 
   let (row, col) = loc in
@@ -49,10 +52,17 @@ type parser_inp = char list * (int * int);;
 
 let const pred ((s, loc): parser_inp) =
   match s with
-  | [] -> raise (X_no_match loc)
+  | [] -> raise (X_no_match (NoMatchInfo (loc, None, None)))
   | e :: s ->
      if (pred e) then (e, (s, (next_loc e loc)))
-     else raise (X_no_match loc);;
+     else raise (X_no_match (NoMatchInfo (loc, None, None)));;
+
+let with_errormsg nt msg s =
+  try (nt s)
+  with X_no_match ((NoMatchInfo (loc, msg2, infos)) as info) ->
+    match msg2 with
+      | None -> raise (X_no_match (NoMatchInfo (loc, Some msg, infos)))
+      | Some(msg2) -> raise (X_no_match (NoMatchInfo (loc, Some msg, Some info)));;
 
 let caten nt1 nt2 s =
   let (e1, s) = (nt1 s) in
@@ -103,17 +113,18 @@ let caten_list nts =
     nts
     nt_epsilon;;
 
-let max_loc ((row1, col1) as loc1) ((row2, col2) as loc2) = 
-  if row1 > row2 then loc1
-  else if row1 = row2 then (if col1 > col2 then loc1 else loc2)
-  else loc1;;
+let max_loc ((NoMatchInfo ((row1, col1), msg1, rest1)) as info1)
+            ((NoMatchInfo ((row2, col2), msg2, rest2)) as info2) = 
+  if row1 > row2 then info1
+  else if row1 = row2 then (if col1 > col2 then info1 else info2)
+  else info2;;
 
 let disj nt1 nt2 s =
-    try (nt1 s) with (X_no_match loc1) -> 
-    try (nt2 s) with (X_no_match loc2) -> 
-      raise (X_no_match (max_loc loc1 loc2));;
+    try (nt1 s) with (X_no_match info1) -> 
+    try (nt2 s) with (X_no_match info2) -> 
+      raise (X_no_match (max_loc info1 info2));;
 
-let nt_none (_, loc) = raise (X_no_match loc);;
+let nt_none (_, loc) = raise (X_no_match (NoMatchInfo (loc, None, None)));;
   
 let disj_list nts = List.fold_right disj nts nt_none;;
 
@@ -122,13 +133,21 @@ let delayed thunk s =
 
 let nt_end_of_input (s, loc) = match s with
   | []  -> ([], ([], loc))
-  | _ -> raise (X_no_match loc);;
+  | _ -> raise (X_no_match (NoMatchInfo (loc, None, None)));;
 
 let rec star nt s =
   try let (e, s) = (nt s) in
       let (es, s) = (star nt s) in
       (e :: es, s)
-  with (X_no_match loc) -> ([], s);;
+  with (X_no_match _) -> ([], s);;
+
+let rec starcaten nt1 nt2 s = 
+  try let (e, s) = (nt1 s) in
+      let ((es, last), s) = (starcaten nt1 nt2 s) in
+      ((e :: es, last), s)
+  with (X_no_match info1) ->
+    try let (e, s) = (nt2 s) in (([], e), s)
+    with (X_no_match info2) -> raise (X_no_match (max_loc info1 info2))
 
 let plus nt =
   packaten nt (star nt) (fun (e, es) -> (e :: es));;
@@ -136,7 +155,7 @@ let plus nt =
 let guard nt pred (s, loc) =
   let ((e, _) as result) = (nt (s, loc)) in
   if (pred e) then result
-  else raise (X_no_match loc);;
+  else raise (X_no_match (NoMatchInfo (loc, None, None)));;
   
 let diff nt1 nt2 (s, loc) =
   let to_match = 
@@ -144,7 +163,7 @@ let diff nt1 nt2 (s, loc) =
     try let _ = nt2 (s, loc) in None
     with (X_no_match _) -> Some(result) in
   match to_match with
-  | None -> raise (X_no_match loc)
+  | None -> raise (X_no_match (NoMatchInfo (loc, None, None)))
   | Some(result) -> result;;
 
 let not_followed_by nt1 nt2 (s, loc) =
@@ -153,7 +172,7 @@ let not_followed_by nt1 nt2 (s, loc) =
 	  try let _ = (nt2 s) in None
 	  with (X_no_match _) -> (Some(result)) in
   match to_match with
-  | None -> raise (X_no_match loc)
+  | None -> raise (X_no_match (NoMatchInfo (loc, None, None)))
   | Some(result) -> result;;
 	  
 let maybe nt s =
@@ -163,7 +182,8 @@ let maybe nt s =
 
 (* useful general parsers for working with text *)
 
-let make_char equal ch1 = const (fun ch2 -> equal ch1 ch2);;
+let make_char equal ch1 = 
+  with_errormsg (const (fun ch2 -> equal ch1 ch2)) (Printf.sprintf "expected a %c" ch1);;
 
 let char = make_char (fun ch1 ch2 -> ch1 = ch2);;
 
@@ -266,13 +286,13 @@ let trace_pc desc nt s =
 		     (list_to_string s)
 		     (list_to_string s') ;
        args)
-  with (X_no_match (row, col)) ->
-    (Printf.printf ";;; %s failed on \"%s\" at row: %d col: %d\n"
+  with (X_no_match (NoMatchInfo ((row, col), reason, infos))) as e ->
+    (Printf.printf ";;; %s failed on \"%s\" at row: %d col: %d. reason: %s\n"
 		   desc
 		   (list_to_string s)
-       row
-       col ;
-     raise (X_no_match (row, col)));;
+       row col
+       "" ;
+     raise e);;
 
 (* testing the parsers *)
 
